@@ -1,69 +1,179 @@
-**Project**: VIBE_CODERS — Synthetic Telecom Data Generator
+# VIBE_CODERS — Telecom Payment Behavior & Segmentation (Hackathon README)
 
-- **Purpose**: Generates a realistic synthetic telecom-customer dataset for experimentation, model training, and testing.
-- **Primary script**: `generate_telecom_data.py` — produces full, train, and test CSV files.
+**Purpose**: Generate synthetic telecom customer data, preprocess it, train segmentation/classification models with leak-aware safeguards, and provide a small API and utilities for inference and templated outreach.
 
-**Getting Started**
-- **Prerequisites**: Python 3.8+ and packages listed in `requirements.txt`.
-- **Install**: 
+This README documents how to run the project end-to-end, explains the role of each file in the repository, highlights important design choices (leakage control, fairness), and gives quick commands for common tasks.
+
+**Quick Hackathon Pitch**
+- **What**: A complete pipeline that goes from synthetic data generation → preprocessing → model training (multiple algorithms, XGBoost with leakage detection) → saved model artifact → FastAPI prediction endpoint → templated outreach generator.
+- **Why**: Useful for experimenting with payment risk segmentation, building targeted communication flows, and evaluating fairness/leakage risks before production.
+
+**Repo layout (high-level)**
+- `generate_telecom_data.py`: Synthetic dataset generator (default 10k rows). Produces `telecom_customers_full.csv` and splits.
+- `preprocess_telecom_data.py`: Data quality checks, preprocessing pipeline builder, and saves `processed_data/preprocessor.joblib`, `label_encoder.joblib`, `train.csv`, `test.csv`.
+- `train_payment_classifier.py`: Trains multiple classifiers (Logistic, RandomForest, GradientBoosting), selects best model, saves `best_model_pipeline.joblib`.
+- `train_xgboost.py`: Advanced XGBoost training with automatic leakage detection and fairness exclusions; saves `xgb_customer_payment_classifier.joblib`.
+- `prediction_pipeline.py`: Helpers to load artifacts, preprocess single rows, and produce predictions plus probabilities.
+- `app.py`: FastAPI app exposing `GET /predict/{customer_id}` to return features + prediction.
+- `data_loader.py`: Simple CSV loader that fetches a single customer row by `customer_id` and returns expected feature order.
+- `email_generator.py` + `templates_db.py`: Simple templated outreach generator using customer metadata and segmentation to build subject/body pairs.
+- `processed_data/`: Artifacts and processed CSVs created by preprocessing.
+- Other scripts: `verify_data.py`, `qt.py`, `classifier.py`, `models.py` (small helpers/tests), and `requirements.txt`.
+
+**Prerequisites**
+- Python 3.8+ (3.10 recommended)
+- PowerShell on Windows (commands below assume PowerShell)
+- Install packages:
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
 
-**Run generator**
-- **Generate default dataset (10k rows)**:
+If you prefer only core packages for running generation and preprocessing:
+
+```powershell
+python -m pip install numpy pandas scikit-learn joblib
+```
+
+**End-to-end workflow (recommended)**
+
+1. Generate synthetic data
 
 ```powershell
 python generate_telecom_data.py
 ```
 
-- **Change number of customers**: edit `N_CUSTOMERS` at top of `generate_telecom_data.py` or call the function from a REPL/script.
+This will produce at repo root:
+- `telecom_customers_full.csv`
+- `telecom_customers_train.csv`
+- `telecom_customers_test.csv`
 
-**Outputs**
-- `telecom_customers_full.csv` — full generated dataset.
-- `telecom_customers_train.csv` — 80% stratified train split by `segment_label`.
-- `telecom_customers_test.csv` — 20% stratified test split.
-
-**Key columns (selected)**
-- **`customer_id`**: Unique ID.
-- **`avg_monthly_bill`, `total_revenue_12m`**: Billing and revenue signals.
-- **`missed_payments_12m`, `num_payments_late_12m`, `late_payment_ratio`**: Payment behavior metrics.
-- **`max_days_late`, `num_bills_30plus_days_late`, `num_bills_60plus_days_late`**: Late-severity indicators.
-- **`credit_score_range`, `wallet_balance`, `current_outstanding_balance`**: Financial stress indicators.
-- **`loyalty_score`, `renewal_rate`, `reward_points_balance`**: Engagement/loyalty.
-- **`segment_label`**: Assigned segment — one of `on_time_payer`, `occasional_defaulter`, `habitual_defaulter`, `critical`.
-
-**Segment labeling logic (brief)**
-- `habitual_defaulter`: `missed_payments_12m >= 3` or `late_payment_ratio > 0.5` or `max_days_late >= 60`.
-- `occasional_defaulter`: `missed_payments_12m` in 1..2 or `0.2 <= late_payment_ratio <= 0.5`.
-- `on_time_payer`: default when none of the above.
-- `critical`: overrides other labels when customer meets high-value criteria (high revenue, long tenure, multi-line/family account, loyalty >=7, and non-poor credit).
-
-**Reproducibility**
-- The generator uses a fixed seed `RANDOM_SEED = 42` at the top of `generate_telecom_data.py`. Change the seed for different synthetic draws.
-
-**Testing / Quick checks**
-- After running, verify distribution and shape:
+2. Preprocess data (quality checks, build preprocessor)
 
 ```powershell
-python - <<'PY'
-import pandas as pd
-print(pd.read_csv('telecom_customers_full.csv').shape)
-print(pd.read_csv('telecom_customers_full.csv')['segment_label'].value_counts(normalize=True))
-PY
+python preprocess_telecom_data.py
 ```
 
-**Notes & caveats**
-- This dataset is synthetic and intended for development/testing only. Do not use it to make production decisions without validating against real production data.
-- Column distributions are simulated and may not capture all real-world edge cases.
+Artifacts written to `processed_data/`:
+- `preprocessor.joblib` — the ColumnTransformer or pipeline used to transform features
+- `label_encoder.joblib` — LabelEncoder for `segment_label` → numeric
+- `train.csv`, `test.csv` — processed CSVs with `target` column
 
-**Next steps you might want**
-- Add a CLI arg to `generate_telecom_data.py` to override `N_CUSTOMERS` and output paths.
-- Add unit tests for label assignment logic in `assign_segment_label`.
+3. Train classification models (baseline and best-pick)
 
-**Contact / Maintainer**
-- Repo owner: `MonishThelapalli` (local workspace owner semantics).
+```powershell
+python train_payment_classifier.py
+```
 
-**License**
-- Internal use only — add a license file if you plan to publish.
+This runs several models, prints metrics, and saves `best_model_pipeline.joblib` (pipeline combining preprocessor + best classifier).
+
+4. (Optional) Train XGBoost with leakage control
+
+```powershell
+python train_xgboost.py
+```
+
+This script performs automatic leakage detection (Mutual Information, correlation, perfect predictors), excludes sensitive demographic columns for basic fairness, runs hyperparameter tuning, saves `xgb_customer_payment_classifier.joblib`, and writes a confusion matrix image.
+
+5. Start the prediction API
+
+```powershell
+python app.py
+```
+
+Then query the API (example):
+
+```powershell
+curl http://127.0.0.1:8000/predict/C0001
+```
+
+6. Generate templated email for a row (example, interactive or script)
+
+Use `email_generator.py` to turn a customer row and predicted category into subject/body pairs using templates in `templates_db.py`.
+
+**Files and responsibilities (detailed)**
+- `generate_telecom_data.py` — Generates realistic features (billing, payments, tenure, usage, demographics, engagement) and assigns `segment_label` via `assign_segment_label` logic (on-time / occasional / habitual / critical). It also produces stratified train/test splits.
+- `preprocess_telecom_data.py` — Runs QA checks (missing values, duplicates, logical rules), builds a `ColumnTransformer` that standardizes numeric features and one-hot encodes categoricals, encodes the target, splits into train/test, and saves artifacts to `processed_data/`.
+- `train_payment_classifier.py` — Loads processed artifacts, transforms data, trains Logistic Regression, Random Forest, and a tuned Gradient Boosting model, evaluates them, and writes the best pipeline to `best_model_pipeline.joblib`.
+- `train_xgboost.py` — A more advanced training script with:
+	- Automatic leakage detection using Mutual Information (MI), numeric correlation, and perfect-predictor checks.
+	- A conservative manual exclusion list for known leakage features (e.g., `missed_payments_12m`, `late_payment_ratio`, `current_outstanding_balance`, etc.).
+	- Sensitive column exclusions for fairness (e.g., `customer_age`, `income_bracket`).
+	- Builds an XGBoost pipeline, tunes hyperparameters with `RandomizedSearchCV`, evaluates and saves the model and confusion matrix.
+- `prediction_pipeline.py` — Utilities to load model & preprocessor, validate/reorder a single-row DataFrame to expected features, transform it, and run `predict` / `predict_proba`. Returns human-readable labels using a saved label encoder.
+- `app.py` — FastAPI wrapper exposing `/predict/{customer_id}`. On startup it loads the model and preprocessor from artifacts, uses `DataLoader` to fetch a single-row, preprocesses, predicts, and returns JSON with features and predicted label/probabilities.
+- `data_loader.py` — CSV-based loader with helpers:
+	- `get_customer_by_id(customer_id)` returns a one-row DataFrame.
+	- `get_expected_feature_columns()` reads `processed_data/train.csv` header to know the exact feature order used during training (important for single-row transforms).
+- `email_generator.py` + `templates_db.py` — A rules-based templating system to create outreach content depending on segment. Useful to demo how segmentation can drive personalized messaging.
+- `templates_db.py` — Template text for `critical`, `occasional_defaulter`, and `habitual_defaulter` categories with placeholders.
+- `qt.py` / `verify_data.py` / `classifier.py` — Small helper or exploratory scripts included for quick checks and prototyping. `verify_data.py` performs a few sanity assertions on `telecom_customers_full.csv`.
+- `processed_data/` — Directory where preprocessing artifacts and processed CSVs are stored after running `preprocess_telecom_data.py`.
+- `best_model_pipeline.joblib`, `xgb_customer_payment_classifier.joblib` — Example saved models / artifacts (some already present in the repo).
+
+**Key design notes / reasoning**
+- Leakage prevention: Many payment-related columns directly reveal the label (missed/late payments). `train_xgboost.py` purposely detects and removes these features and also includes a manual blacklist so the model must rely on safer behavioral and historical signals.
+- Fairness: The pipeline demonstrates a simple step to exclude sensitive demographics from training — include more advanced fairness checks (e.g., group metrics) as needed.
+- Reproducibility: Synthetic generator uses a fixed seed by default (`RANDOM_SEED = 42`) so runs are repeatable unless you change the seed.
+
+**Quick troubleshooting**
+- `FileNotFoundError` for `processed_data/*`: run `preprocess_telecom_data.py` first.
+- FastAPI startup errors about model/preprocessor: ensure `best_model_pipeline.joblib` and `processed_data/preprocessor.joblib` exist and are readable.
+- Stratify errors during train/test split: ensure `segment_label` exists and isn't extremely imbalanced for the chosen split.
+
+**Suggested improvements for hackathon demo**
+- Add CLI flags to `generate_telecom_data.py` (`--count`, `--seed`, `--out-dir`) and to training scripts (`--model-out`, `--skip-tune`).
+- Add a small Streamlit dashboard to visualize class distributions and model performance (quick prototype).
+- Add `pytest` tests covering `assign_segment_label` and `prediction_pipeline.preprocess_input_row`.
+- Add a CI workflow (GitHub Actions) to run tests and a lint pass on push.
+
+**Commands summary**
+- Install dependencies:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+- Generate data:
+
+```powershell
+python generate_telecom_data.py
+```
+
+- Preprocess data:
+
+```powershell
+python preprocess_telecom_data.py
+```
+
+- Train models (baseline):
+
+```powershell
+python train_payment_classifier.py
+```
+
+- Train XGBoost (leakage-aware):
+
+```powershell
+python train_xgboost.py
+```
+
+- Run prediction API:
+
+```powershell
+python app.py
+curl http://127.0.0.1:8000/predict/C0001
+```
+
+**License & Attribution**
+- No license included in this repository. For hackathon delivery, add a short permissive license (e.g., MIT) if you plan to publish.
+
+**Contact / Maintainers**
+- Repo owner (local workspace): `MonishThelapalli`.
+
+If you want, I can now:
+- Add CLI flags to `generate_telecom_data.py` and `train_*` scripts and run them to verify outputs.
+- Add `tests/test_labeling.py` with `pytest` and create a simple GitHub Actions workflow.
+- Create a short Streamlit dashboard (`app_ui.py`) that calls the FastAPI endpoint and visualizes predictions.
+
+Pick one and I'll implement it next.

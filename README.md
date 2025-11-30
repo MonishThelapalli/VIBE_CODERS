@@ -1,4 +1,4 @@
-# VIBE_CODERS — Telecom Payment Behavior & Segmentation (Hackathon README)
+# VIBE_CODERS — Customer Payment Classification & Communication Assistant (Hackathon README)
 
 **Purpose**: Generate synthetic telecom customer data, preprocess it, train segmentation/classification models with leak-aware safeguards, and provide a small API and utilities for inference and templated outreach.
 
